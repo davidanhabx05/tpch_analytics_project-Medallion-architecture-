@@ -1,0 +1,1012 @@
+SELECT * FROM CUSTOMER;
+SELECT * FROM NATION;
+SELECT * FROM REGION;
+SELECT * FROM SUPPLIER;
+SELECT * FROM LINEITEM;
+SELECT * FROM ORDERS;
+SELECT * FROM PART;
+SELECT * FROM PARTSUPP;
+
+
+--LOAD DATA THẲNG VÀO LUÔN THAY VÌ DOWNLOAD XUỐNG XOG LẠI PUSH VÀO STAGE FILE NẶNG
+CREATE OR REPLACE TABLE LINEITEM AS 
+    SELECT * FROM SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.LINEITEM;
+
+CREATE OR REPLACE TABLE ORDERS AS 
+    SELECT * FROM SNOWFLAKE_SAMPLE_DATA.TPCH_SF1.ORDERS;
+    
+
+--KIỂM TRA DỮ LIỆU SAU KHI LOAD 
+SELECT * FROM STAGING.ORDERS;
+SELECT * FROM STAGING.PART;
+--LỖI
+SELECT * FROM STAGING.PARTSUPP;
+SELECT * FROM STAGING.LINEITEM;
+SELECT * FROM CUSTOMERS;
+SELECT * FROM NATION;
+SELECT * FROM SUPPLIER;
+
+-- LỖI
+SELECT * FROM STAGING.REGION;
+--phải parse xong mới import dc
+INSERT INTO REGION(R_REGIONKEY, R_NAME, R_COMMENT)
+SELECT 
+    TRY_TO_NUMBER(c1,38,0),
+    c2,
+    c3
+FROM REGION_RAW;
+--IMPORT XONG THÌ LẠI THỪA CẢ TIÊU ĐỀ NÊN DÒNG ĐÂU TIỀN BỊ NULL =))
+DELETE FROM REGION WHERE R_REGIONKEY IS NULL
+
+--tìm cách khác cho tiện !
+
+
+SELECT 'ORDERS', COUNT(*) FROM ORDERS; 
+SELECT 'CUSTOMERS', COUNT(*) FROM CUSTOMERS; 
+SELECT 'LINEITEM', COUNT(*) FROM LINEITEM;
+SELECT 'NATION', COUNT(*) FROM NATION; 
+SELECT 'PART', COUNT(*) FROM PART; 
+SELECT 'PARTSUPP', COUNT(*) FROM PARTSUPP; 
+SELECT 'REGION', COUNT(*) FROM REGION; 
+SELECT 'SUPPLIER', COUNT(*) FROM SUPPLIER; 
+
+
+
+SELECT CURRENT_DATABASE(); --KIỂM TRA ĐANG ĐỨNG Ở DATABASE NÀO 
+SELECT CURRENT_SCHEMA();
+
+SHOW TABLES;  --KIỂM TRA Ở TẦNG SILVER CÓ 3 BẢNG RỒI THÊM LÀM ENRICHMENT CÁC TRƯỜNG 
+DESC TABLE ORDERS_SILVER; -- KIỂM TRA CẤU TRÚC TRƯỜNG DỮ LIỆU BẢNG 
+DESC TABLE STAGING.ORDERS
+SELECT * FROM STAGING.ORDERS; --ORDER_DATE CÓ DẠNG "YYYY-MM-DD" -> TRANSFORM NÓ
+
+
+SELECT 
+    O_ORDERKEY,
+    O_CUSTKEY,
+    O_ORDERSTATUS,
+    O_TOTALPRICE,
+    O_ORDERDATE, --GIỮ NGUYÊN 
+    O_ORDERPRIORITY,
+    O_CLERK,
+    O_SHIPPRIORITY,
+    O_COMMENT,
+    YEAR(O_ORDERDATE) AS O_ORDERYEAR, --LÀM GIÀU  DỮ LIỆU ENRICH MENT
+    MONTH(O_ORDERDATE) AS O_ORDERMONTH,
+    QUARTER(O_ORDERDATE) AS O_ORDERQUARTER
+FROM STAGING.ORDERS
+LIMIT 30;
+
+--MORE CLEAR
+SELECT
+    CASE O_ORDERSTATUS 
+    WHEN 'O' THEN 'OKE'
+    WHEN 'F' THEN 'FAILED'
+    WHEN 'P' THEN 'PENDING'
+    ELSE 'UNKNOWN'
+    END AS O_ORDERSTATUS
+FROM STAGING.ORDERS
+ORDER BY O_ORDERSTATUS DESC;
+
+--DERIVED : LÀM BỔ SUNG THÊM Ý NGHĨA RÕ RÀNG CLEAR HƠN
+SELECT 
+    CASE O_ORDERPRIORITY
+        WHEN '1-URGENT' THEN 'URGENT'
+        WHEN '2-HIGH'   THEN 'HIGH'
+        WHEN '3-MEDIUM' THEN 'MEDIUM'
+        WHEN '4-NOT SPECIFIED' THEN 'NOT SPECIFIED'
+        WHEN '5-LOW' THEN  'LOW'
+        ELSE 'UNKNOWN'
+    END AS O_ORDERPRIORITY   
+FROM STAGING.ORDERS;
+
+--derived: làm rõ nghĩa hơn
+SELECT  
+    CASE O_ORDERPRIORITY
+        WHEN '1-URGENT' THEN 1
+        WHEN '2-HIGH'   THEN 2
+        WHEN  '3-MEDIUM' THEN 3
+        WHEN '4-NOT SPECIFIED' THEN 4
+        WHEN '5-LOW'    THEN 5
+        ELSE NULL
+    END AS O_ODERPRIORITY_RANK
+FROM STAGING.ORDERS;
+
+SELECT    
+    TRY_CAST(SUBSTR(O_CLERK,7) AS NUMBER(9,0)) AS O_CLERK_ID
+FROM STAGING.ORDERS;
+
+
+
+--BẢNG ORDERS_SILVER
+--SAU KHI TEST TRANSFORM LÀM GIÀU DỮ LIỆU GIỜ INSERT TỪ STAGING VÀO BẢNG ORDER_SILVER
+INSERT INTO ORDERS_SILVER(
+    O_ORDERKEY,
+    O_CUSTKEY,
+    O_ORDERSTATUS,
+    O_ORDERSTATUS_DESC,
+    O_TOTALPRICE,
+    O_ORDERDATE,
+    O_ORDER_YEAR,
+    O_ORDER_MONTH,
+    O_ORDER_QUARTER,
+    O_ORDERPRIORITY,
+    O_PRIORITY_RANK,
+    O_CLERK,
+    O_CLERK_ID,
+    O_SHIPPRIORITY,
+    O_COMMENT,
+    SOURCE_FILE,
+    FIRST_LOADED_AT,
+    LAST_UPDATED_AT
+)
+SELECT
+    O_ORDERKEY,
+    O_CUSTKEY,
+    O_ORDERSTATUS,
+    CASE O_ORDERSTATUS
+        WHEN 'O' THEN 'OKE'
+        WHEN 'F' THEN 'FAILED'
+        WHEN 'P' THEN 'PENDING'
+        ELSE 'UNKNOWN'
+    END,
+    O_TOTALPRICE,
+    O_ORDERDATE,
+    YEAR(O_ORDERDATE),
+    MONTH(O_ORDERDATE),
+    QUARTER(O_ORDERDATE),
+        CASE O_ORDERPRIORITY 
+        WHEN '1-URGENT' THEN 'URGENT'
+        WHEN '2-HIGH'  THEN 'HIGH'
+        WHEN '3-MEDIUM' THEN 'MEDIUM'
+        WHEN '4-NOT SPECIFIED' THEN 'NOT SPECIFIED' 
+        WHEN '5-LOW' THEN 'LOW'
+        ELSE 'UNKNOWN'
+    END, 
+    CASE O_ORDERPRIORITY 
+        WHEN '1-URGENT' THEN 1
+        WHEN '2-HIGH'  THEN 2
+        WHEN '3-MEDIUM' THEN 3
+        WHEN '4-NOT SPECIFIED' THEN 4 
+        WHEN '5-LOW' THEN 5
+        ELSE NULL
+    END, 
+    O_CLERK,
+    TRY_CAST(SUBSTR(O_CLERK,7) AS NUMBER(9,0)),
+    O_SHIPPRIORITY,
+    O_COMMENT,
+    '.STAGING.ORDERS' AS SOURCE_FILE,
+    CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS FIRST_LOADED_AT,
+    CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS LAST_UPDATED_AT
+FROM STAGING.ORDERS;
+
+
+
+DESC TABLE CUSTOMER_SILVER;
+--BẢNG CUSTOMERS 
+
+--PUSH TỪ STAGING -> VÀO SILVER - TRANSFORMATION 
+INSERT INTO CUSTOMER_SILVER(
+    C_CUSTKEY,
+    C_NAME,
+    C_ADDRESS,
+    C_NATIONKEY,
+    C_NATION_NAME,
+    C_REGIONKEY,
+    C_REGION_NAME,
+    C_PHONE,
+    C_ACCTBAL,
+    C_MKTSEGMENT,
+    C_COMMENT,
+    LOAD_TIMESTAMP
+)
+SELECT
+    c.c_cuskey,
+    c.c_name,
+    c.c_address,
+    c.c_nationkey,
+    n.n_name            AS C_NATION_NAME,
+    r.r_regionkey       AS C_REGIONKEY,
+    r.r_name            AS C_REGION_NAME,
+    c.c_phone,
+    c.c_acctbal,
+    c.c_mktsegment,
+    c.c_comment,
+    CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS LOAD_TIMESTAMP
+FROM STAGING.CUSTOMERS as c
+LEFT JOIN STAGING.NATION as n ON c.C_NATIONKEY = n.N_NATIONKEY
+LEFT JOIN STAGING.REGION as r ON n.n_nationkey = r.r_regionkey;
+
+--
+DESC TABLE LINEITEM_SILVER
+
+INSERT INTO LINEITEM_SILVER(
+    L_ORDERKEY,
+    L_LINENUMBER,
+    L_PARTKEY,
+    L_PART_NAME,
+    L_PART_TYPE,
+    L_SUPPKEY,
+    L_SUPPLIER_NAME,
+    L_QUANTITY,
+    L_EXTENDEDPRICE,
+    L_DISCOUNT,
+    L_TAX,
+    L_RETURNFLAG,
+    L_LINESTATUS,
+    L_SHIPDATE,
+    L_COMMITDATE, 
+    L_RECEIPTDATE,
+    L_SHIPINSTRUCT,
+    L_SHIPMODE,
+    L_COMMENT,
+    L_NET_PRICE,
+    L_FINAL_PRICE,
+    L_SHIP_DELAY_DAYS,
+    LOAD_TIMESTAMP
+)
+SELECT 
+    l.L_ORDERKEY,
+    l.l_linenumber,
+    l.l_partkey,
+    p.p_name           AS L_PART_NAME,
+    p.p_type           AS L_PART_TYPE,
+    l.l_suppkey,
+    s.s_NAME           AS L_SUPPLIER_NAME,
+    l.l_quantity,
+    l.l_extendedprice,
+    l.l_discount,
+    l.l_tax,
+    l.l_returnflag,
+    l.l_linestatus,
+    l.l_shipdate,
+    l.l_commitdate,
+    l.l_receiptdate,
+    l.l_shipinstruct,
+    l.l_shipmode,
+    l.l_comment,
+
+    ROUND(l.l_extendedprice * (1 - l.l_discount),2)  AS L_NET_PRICE, --giá sau chiết khấu
+    ROUND((l.L_EXTENDEDPRICE * (1 - l.L_DISCOUNT)) * (1 + l.L_TAX), 2) AS L_FINAL_PRICE, --giá sau khi thêm thuế
+    DATEDIFF('day', l.L_COMMITDATE, l.L_RECEIPTDATE) AS L_SHIP_DELAY_DAYS, --số ngày trễ giao hàng giữa commit_date với receipt_date
+    CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS LOAD_TIMESTAMP
+FROM STAGING.LINEITEM AS l
+LEFT JOIN STAGING.PART AS p         ON l.l_partkey = p.p_partkey
+LEFT JOIN STAGING.SUPPLIER AS s     ON l.l_suppkey = s.S_SUPPKEY
+
+
+SELECT * FROM CUSTOMER_SILVER LIMIT 5;
+SELECT * FROM LINEITEM_SILVER LIMIT 5;
+
+
+
+--VIẾT PROCEDURE tự tính toán logic 
+CREATE OR REPLACE PROCEDURE TPCH_ANALYTICS_DB.REPORTS.SP_CALCULATE_CUSTOMER_LTV()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS 
+$$
+BEGIN 
+    -- 1. Làm mới bảng Gold trong schema REPORTS (Tuyệt đối không truncate bảng Silver)
+    TRUNCATE TABLE TPCH_ANALYTICS_DB.REPORTS.CUSTOMER_LTV;     
+
+    -- 2. Nạp dữ liệu vào bảng Gold trong schema REPORTS
+    INSERT INTO TPCH_ANALYTICS_DB.REPORTS.CUSTOMER_LTV (
+        C_CUSTKEY,
+        C_NAME,
+        C_MKTSEGMENT,
+        C_NATION_NAME,
+        TOTAL_ORDERS,
+        TOTAL_SPENT,
+        AVG_ORDER_VALUE,
+        FIRST_ORDER_DATE,
+        LAST_ORDER_DATE,
+        CUSTOMER_TENURE_DAYS,
+        CUSTOMER_TIER,
+        IS_ACTIVE,
+        LAST_CALCULATED_AT
+    )
+    SELECT 
+        c.C_CUSTKEY,
+        c.C_NAME,
+        c.C_MKTSEGMENT,
+        c.C_NATION_NAME,
+
+        COUNT(o.O_ORDERKEY)                               AS TOTAL_ORDERS,
+        COALESCE(SUM(o.O_TOTALPRICE), 0.00)               AS TOTAL_SPENT,
+        ROUND(COALESCE(AVG(o.O_TOTALPRICE), 0.00), 2)     AS AVG_ORDER_VALUE,
+
+        MIN(o.O_ORDERDATE)                                AS FIRST_ORDER_DATE,
+        MAX(o.O_ORDERDATE)                                AS LAST_ORDER_DATE,
+        
+        -- Số ngày gắn bó giữa đơn đầu và đơn cuối
+        COALESCE(DATEDIFF('day', MIN(o.O_ORDERDATE), MAX(o.O_ORDERDATE)), 0) AS CUSTOMER_TENURE_DAYS,
+        
+        -- Phân hạng khách hàng
+        CASE 
+            WHEN SUM(o.O_TOTALPRICE) >= 500000 THEN 'VIP'
+            WHEN SUM(o.O_TOTALPRICE) >= 200000 THEN 'GOLD'
+            WHEN SUM(o.O_TOTALPRICE) >= 100000 THEN 'SILVER'
+            WHEN SUM(o.O_TOTALPRICE) >= 50000  THEN 'BRONZE'
+            ELSE 'STANDARD'
+        END AS CUSTOMER_TIER,
+        
+        -- Khách hàng còn active trong 90 ngày gần nhất
+        COALESCE(MAX(o.O_ORDERDATE) >= DATEADD('day', -90, CURRENT_DATE()), FALSE) AS IS_ACTIVE,
+        
+        CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS LAST_CALCULATED_AT
+
+    -- ĐỌC DỮ LIỆU TỪ TẦNG SILVER Ở SCHEMA ANALYTICS
+    FROM TPCH_ANALYTICS_DB.ANALYTICS.CUSTOMER_SILVER c
+    INNER JOIN TPCH_ANALYTICS_DB.ANALYTICS.ORDERS_SILVER o ON c.C_CUSTKEY = o.O_CUSTKEY
+    GROUP BY 
+        c.C_CUSTKEY,
+        c.C_NAME,
+        c.C_MKTSEGMENT,
+        c.C_NATION_NAME;
+
+    RETURN 'SUCCESS: Recalculated CUSTOMER_LTV in REPORTS successfully at ' || CURRENT_TIMESTAMP()::VARCHAR;
+END;
+$$;
+
+CALL TPCH_ANALYTICS_DB.REPORTS.SP_CALCULATE_CUSTOMER_LTV();
+
+
+SELECT * FROM TPCH_ANALYTICS_DB.REPORTS.CUSTOMER_LTV LIMIT 10;
+
+
+
+CREATE OR REPLACE TABLE TPCH_ANALYTICS_DB.REPORTS.DAILY_SALES_SUMMARY (
+    ORDER_DATE             DATE PRIMARY KEY,
+    ORDER_YEAR             NUMBER(4,0),
+    ORDER_MONTH            NUMBER(2,0),
+    TOTAL_ORDERS           NUMBER(38,0),
+    TOTAL_CUSTOMERS        NUMBER(38,0),
+    TOTAL_ITEMS_SOLD       NUMBER(12,2),
+    GROSS_REVENUE          NUMBER(18,2), -- Tổng tiền theo Extended Price
+    NET_REVENUE            NUMBER(18,2), -- Doanh thu thuần sau chiết khấu (dùng L_NET_PRICE)
+    TOTAL_TAX              NUMBER(18,2), -- Tiền thuế thu được
+    FINAL_REVENUE          NUMBER(18,2), -- Doanh thu cuối cùng có thuế (dùng L_FINAL_PRICE)
+    AVG_ORDER_VALUE        NUMBER(18,2),
+    LAST_CALCULATED_AT     TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+
+
+CREATE OR REPLACE PROCEDURE TPCH_ANALYTICS_DB.REPORTS.SP_CALCULATE_DAILY_SALES_SUMMARY()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+BEGIN
+    -- 1. Làm sạch bảng trước khi nạp
+    TRUNCATE TABLE TPCH_ANALYTICS_DB.REPORTS.DAILY_SALES_SUMMARY;
+
+    -- 2. Nạp dữ liệu tổng hợp theo ngày
+    INSERT INTO TPCH_ANALYTICS_DB.REPORTS.DAILY_SALES_SUMMARY (
+        ORDER_DATE,
+        ORDER_YEAR,
+        ORDER_MONTH,
+        TOTAL_ORDERS,
+        TOTAL_CUSTOMERS,
+        TOTAL_ITEMS_SOLD,
+        GROSS_REVENUE,
+        NET_REVENUE,
+        TOTAL_TAX,
+        FINAL_REVENUE,
+        AVG_ORDER_VALUE,
+        LAST_CALCULATED_AT
+    )
+    SELECT 
+        o.O_ORDERDATE                                          AS ORDER_DATE,
+        o.O_ORDER_YEAR                                         AS ORDER_YEAR,
+        o.O_ORDER_MONTH                                        AS ORDER_MONTH,
+        
+        COUNT(DISTINCT o.O_ORDERKEY)                           AS TOTAL_ORDERS,
+        COUNT(DISTINCT o.O_CUSTKEY)                            AS TOTAL_CUSTOMERS,
+        COALESCE(SUM(l.L_QUANTITY), 0)                         AS TOTAL_ITEMS_SOLD,
+        
+        -- Doanh thu & thuế từ bảng Lineitem
+        COALESCE(SUM(l.L_EXTENDEDPRICE), 0.00)                 AS GROSS_REVENUE,
+        COALESCE(SUM(l.L_NET_PRICE), 0.00)                     AS NET_REVENUE,
+        COALESCE(SUM(l.L_EXTENDEDPRICE * l.L_TAX), 0.00)      AS TOTAL_TAX,
+        COALESCE(SUM(l.L_FINAL_PRICE), 0.00)                   AS FINAL_REVENUE,
+        
+        -- Giá trị đơn hàng trung bình trong ngày
+        ROUND(COALESCE(SUM(l.L_FINAL_PRICE), 0.00) / NULLIF(COUNT(DISTINCT o.O_ORDERKEY), 0), 2) AS AVG_ORDER_VALUE,
+        
+        CURRENT_TIMESTAMP()::TIMESTAMP_NTZ                     AS LAST_CALCULATED_AT
+
+    FROM TPCH_ANALYTICS_DB.ANALYTICS.ORDERS_SILVER o
+    LEFT JOIN TPCH_ANALYTICS_DB.ANALYTICS.LINEITEM_SILVER l 
+        ON o.O_ORDERKEY = l.L_ORDERKEY
+    GROUP BY 
+        o.O_ORDERDATE,
+        o.O_ORDER_YEAR,
+        o.O_ORDER_MONTH;
+
+    RETURN 'SUCCESS: Recalculated DAILY_SALES_SUMMARY in REPORTS successfully at ' || CURRENT_TIMESTAMP()::VARCHAR;
+END;
+$$;
+
+CALL TPCH_ANALYTICS_DB.REPORTS.SP_CALCULATE_DAILY_SALES_SUMMARY();
+
+SELECT * 
+FROM TPCH_ANALYTICS_DB.REPORTS.DAILY_SALES_SUMMARY 
+ORDER BY ORDER_DATE DESC 
+LIMIT 10;
+
+
+
+
+--BÀI TOÁN: PHÂN TÍCH DANH MỤC SẢN PHẨM VÀ BIÊN LỢI NHUẬN <PRODUCTS SALES VÀ MARGIN PERFORMANCE>
+CREATE OR REPLACE TABLE TPCH_ANALYTICS_DB.REPORTS.PRODUCT_MARGIN_PERFORMANCE (
+    PART_KEY                 NUMBER(38,0) PRIMARY KEY,
+    PART_NAME                VARCHAR(55),
+    PART_TYPE                VARCHAR(25),
+    TOTAL_QUANTITY_SOLD      NUMBER(12,2),
+    GROSS_SALES              NUMBER(18,2), -- Doanh thu niêm yết (L_EXTENDEDPRICE)
+    TOTAL_DISCOUNT_LOST      NUMBER(18,2), -- Số tiền đã chiết khấu cho khách
+    NET_SALES                NUMBER(18,2), -- Doanh thu thực nhận sau chiết khấu
+    AVG_DISCOUNT_PCT         NUMBER(5,2),  -- Tỷ lệ chiết khấu trung bình (%)
+    SALES_CONTRIBUTION_RANK  NUMBER(10,0), -- Thứ hạng đóng góp doanh thu
+    PERFORMANCE_LABEL        VARCHAR(20),  -- STAR / CORE / UNDERPERFORMER
+    LAST_CALCULATED_AT       TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+
+CREATE OR REPLACE PROCEDURE TPCH_ANALYTICS_DB.REPORTS.SP_CALCULATE_PRODUCT_MARGIN_PERFORMANCE()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+BEGIN
+    TRUNCATE TABLE TPCH_ANALYTICS_DB.REPORTS.PRODUCT_MARGIN_PERFORMANCE;
+
+    INSERT INTO TPCH_ANALYTICS_DB.REPORTS.PRODUCT_MARGIN_PERFORMANCE (
+        PART_KEY,
+        PART_NAME,
+        PART_TYPE,
+        TOTAL_QUANTITY_SOLD,
+        GROSS_SALES,
+        TOTAL_DISCOUNT_LOST,
+        NET_SALES,
+        AVG_DISCOUNT_PCT,
+        SALES_CONTRIBUTION_RANK,
+        PERFORMANCE_LABEL,
+        LAST_CALCULATED_AT
+    )
+    WITH part_summary AS (
+        SELECT 
+            l.L_PARTKEY                                            AS PART_KEY,
+            COALESCE(l.L_PART_NAME, 'UNKNOWN')                     AS PART_NAME,
+            COALESCE(l.L_PART_TYPE, 'UNKNOWN')                     AS PART_TYPE,
+            SUM(l.L_QUANTITY)                                      AS TOTAL_QUANTITY_SOLD,
+            SUM(l.L_EXTENDEDPRICE)                                 AS GROSS_SALES,
+            SUM(l.L_EXTENDEDPRICE * l.L_DISCOUNT)                  AS TOTAL_DISCOUNT_LOST,
+            SUM(l.L_NET_PRICE)                                     AS NET_SALES,
+            ROUND(AVG(l.L_DISCOUNT) * 100, 2)                      AS AVG_DISCOUNT_PCT,
+            DENSE_RANK() OVER (ORDER BY SUM(l.L_NET_PRICE) DESC)   AS SALES_CONTRIBUTION_RANK
+        FROM TPCH_ANALYTICS_DB.ANALYTICS.LINEITEM_SILVER l
+        GROUP BY l.L_PARTKEY, l.L_PART_NAME, l.L_PART_TYPE
+    )
+    SELECT 
+        PART_KEY,
+        PART_NAME,
+        PART_TYPE,
+        TOTAL_QUANTITY_SOLD,
+        ROUND(GROSS_SALES, 2) AS GROSS_SALES,
+        ROUND(TOTAL_DISCOUNT_LOST, 2) AS TOTAL_DISCOUNT_LOST,
+        ROUND(NET_SALES, 2) AS NET_SALES,
+        AVG_DISCOUNT_PCT,
+        SALES_CONTRIBUTION_RANK,
+        -- Đánh giá phân loại hiệu năng sản phẩm
+        CASE 
+            WHEN SALES_CONTRIBUTION_RANK <= 50 THEN 'STAR PRODUCT'
+            WHEN SALES_CONTRIBUTION_RANK <= 200 THEN 'CORE PRODUCT'
+            ELSE 'UNDERPERFORMER'
+        END AS PERFORMANCE_LABEL,
+        CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS LAST_CALCULATED_AT
+    FROM part_summary;
+
+    RETURN 'SUCCESS: Recalculated PRODUCT_MARGIN_PERFORMANCE successfully at ' || CURRENT_TIMESTAMP()::VARCHAR;
+END;
+$$;
+
+-- 2. Chạy tính toán Product Performance
+CALL TPCH_ANALYTICS_DB.REPORTS.SP_CALCULATE_PRODUCT_MARGIN_PERFORMANCE();
+
+-- Xem các sản phẩm bán chạy hàng đầu (Top Stars)
+SELECT * 
+FROM TPCH_ANALYTICS_DB.REPORTS.PRODUCT_MARGIN_PERFORMANCE 
+ORDER BY SALES_CONTRIBUTION_RANK ASC 
+LIMIT 10;
+
+
+
+CREATE OR REPLACE TABLE TPCH_ANALYTICS_DB.REPORTS.TOP_PRODUCTS_BY_PERIOD (
+    PERIOD_TYPE          VARCHAR(10),  -- 'YEAR' hoặc 'QUARTER'
+    ORDER_YEAR           NUMBER(4,0),
+    ORDER_QUARTER        NUMBER(1,0),  -- NULL nếu là PERIOD_TYPE = 'YEAR'
+    PRODUCT_RANK         NUMBER(2,0),  -- Từ 1 đến 10
+    PART_KEY             NUMBER(38,0),
+    PART_NAME            VARCHAR(55),
+    PART_TYPE            VARCHAR(25),
+    TOTAL_QUANTITY_SOLD  NUMBER(12,2), -- Số lượng sản phẩm bán ra
+    TOTAL_NET_REVENUE    NUMBER(18,2), -- Doanh thu thuần (dựa trên L_NET_PRICE)
+    TOTAL_ORDERS_COUNT   NUMBER(38,0), -- Số đơn hàng có chứa sản phẩm này
+    LAST_CALCULATED_AT   TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
+
+CREATE OR REPLACE PROCEDURE TPCH_ANALYTICS_DB.REPORTS.SP_CALCULATE_TOP_PRODUCTS_PERIOD()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+BEGIN
+    -- 1. Làm sạch bảng trước khi nạp mới
+    TRUNCATE TABLE TPCH_ANALYTICS_DB.REPORTS.TOP_PRODUCTS_BY_PERIOD;
+
+    -- 2. Nạp dữ liệu TOP 10 THEO NĂM và THEO QUÝ
+    INSERT INTO TPCH_ANALYTICS_DB.REPORTS.TOP_PRODUCTS_BY_PERIOD (
+        PERIOD_TYPE,
+        ORDER_YEAR,
+        ORDER_QUARTER,
+        PRODUCT_RANK,
+        PART_KEY,
+        PART_NAME,
+        PART_TYPE,
+        TOTAL_QUANTITY_SOLD,
+        TOTAL_NET_REVENUE,
+        TOTAL_ORDERS_COUNT,
+        LAST_CALCULATED_AT
+    )
+    WITH base_sales AS (
+        -- Ghép bảng Lineitem Silver và Orders Silver để lấy năm, quý đặt hàng
+        SELECT 
+            o.O_ORDER_YEAR                                      AS ORDER_YEAR,
+            o.O_ORDER_QUARTER                                   AS ORDER_QUARTER,
+            l.L_PARTKEY                                         AS PART_KEY,
+            COALESCE(l.L_PART_NAME, 'UNKNOWN')                 AS PART_NAME,
+            COALESCE(l.L_PART_TYPE, 'UNKNOWN')                 AS PART_TYPE,
+            l.L_QUANTITY                                        AS QUANTITY,
+            l.L_NET_PRICE                                       AS NET_PRICE,
+            o.O_ORDERKEY                                        AS ORDER_KEY
+        FROM TPCH_ANALYTICS_DB.ANALYTICS.LINEITEM_SILVER l
+        INNER JOIN TPCH_ANALYTICS_DB.ANALYTICS.ORDERS_SILVER o 
+            ON l.L_ORDERKEY = o.O_ORDERKEY
+    ),
+    yearly_ranked AS (
+        -- Xếp hạng Top sản phẩm theo từng Năm
+        SELECT 
+            'YEAR'                                              AS PERIOD_TYPE,
+            ORDER_YEAR,
+            NULL::NUMBER(1,0)                                   AS ORDER_QUARTER,
+            ROW_NUMBER() OVER (
+                PARTITION BY ORDER_YEAR 
+                ORDER BY SUM(NET_PRICE) DESC
+            )                                                   AS PRODUCT_RANK,
+            PART_KEY,
+            PART_NAME,
+            PART_TYPE,
+            SUM(QUANTITY)                                       AS TOTAL_QUANTITY_SOLD,
+            ROUND(SUM(NET_PRICE), 2)                            AS TOTAL_NET_REVENUE,
+            COUNT(DISTINCT ORDER_KEY)                           AS TOTAL_ORDERS_COUNT
+        FROM base_sales
+        GROUP BY ORDER_YEAR, PART_KEY, PART_NAME, PART_TYPE
+    ),
+    quarterly_ranked AS (
+        -- Xếp hạng Top sản phẩm theo từng Quý trong Năm
+        SELECT 
+            'QUARTER'                                           AS PERIOD_TYPE,
+            ORDER_YEAR,
+            ORDER_QUARTER,
+            ROW_NUMBER() OVER (
+                PARTITION BY ORDER_YEAR, ORDER_QUARTER 
+                ORDER BY SUM(NET_PRICE) DESC
+            )                                                   AS PRODUCT_RANK,
+            PART_KEY,
+            PART_NAME,
+            PART_TYPE,
+            SUM(QUANTITY)                                       AS TOTAL_QUANTITY_SOLD,
+            ROUND(SUM(NET_PRICE), 2)                            AS TOTAL_NET_REVENUE,
+            COUNT(DISTINCT ORDER_KEY)                           AS TOTAL_ORDERS_COUNT
+        FROM base_sales
+        GROUP BY ORDER_YEAR, ORDER_QUARTER, PART_KEY, PART_NAME, PART_TYPE
+    )
+    -- Gom cả 2 bảng lại và chỉ lọc lấy đúng TOP 10 (RANK <= 10)
+    SELECT 
+        PERIOD_TYPE,
+        ORDER_YEAR,
+        ORDER_QUARTER,
+        PRODUCT_RANK,
+        PART_KEY,
+        PART_NAME,
+        PART_TYPE,
+        TOTAL_QUANTITY_SOLD,
+        TOTAL_NET_REVENUE,
+        TOTAL_ORDERS_COUNT,
+        CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS LAST_CALCULATED_AT
+    FROM yearly_ranked
+    WHERE PRODUCT_RANK <= 10
+
+    UNION ALL
+
+    SELECT 
+        PERIOD_TYPE,
+        ORDER_YEAR,
+        ORDER_QUARTER,
+        PRODUCT_RANK,
+        PART_KEY,
+        PART_NAME,
+        PART_TYPE,
+        TOTAL_QUANTITY_SOLD,
+        TOTAL_NET_REVENUE,
+        TOTAL_ORDERS_COUNT,
+        CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS LAST_CALCULATED_AT
+    FROM quarterly_ranked
+    WHERE PRODUCT_RANK <= 10;
+
+    RETURN 'SUCCESS: Recalculated TOP_PRODUCTS_BY_PERIOD successfully at ' || CURRENT_TIMESTAMP()::VARCHAR;
+END;
+$$;
+
+CALL TPCH_ANALYTICS_DB.REPORTS.SP_CALCULATE_TOP_PRODUCTS_PERIOD();
+
+SELECT 
+    ORDER_YEAR,
+    PRODUCT_RANK,
+    PART_NAME,
+    PART_TYPE,
+    TOTAL_QUANTITY_SOLD,
+    TOTAL_NET_REVENUE
+FROM TPCH_ANALYTICS_DB.REPORTS.TOP_PRODUCTS_BY_PERIOD
+WHERE PERIOD_TYPE = 'YEAR'
+ORDER BY ORDER_YEAR DESC, PRODUCT_RANK ASC;
+
+SELECT 
+    ORDER_YEAR,
+    ORDER_QUARTER,
+    PRODUCT_RANK,
+    PART_NAME,
+    TOTAL_QUANTITY_SOLD,
+    TOTAL_NET_REVENUE
+FROM TPCH_ANALYTICS_DB.REPORTS.TOP_PRODUCTS_BY_PERIOD
+WHERE PERIOD_TYPE = 'QUARTER' AND ORDER_YEAR = 1995
+ORDER BY ORDER_QUARTER ASC, PRODUCT_RANK ASC;
+
+
+
+--tạo stream cho bảng orders theo dõi 
+CREATE OR REPLACE STREAM TPCH_ANALYTICS_DB.STAGING.ORDERS_STREAM
+ON TABLE TPCH_ANALYTICS_DB.STAGING.ORDERS
+APPEND_ONLY = TRUE;
+
+--tạo stream cho bảng customers
+CREATE OR REPLACE STREAM TPCH_ANALYTICS_DB.STAGING.CUSTOMERS_STREAM
+ON TABLE TPCH_ANALYTICS_DB.STAGING.CUSTOMERS
+APPEND_ONLY = TRUE;
+
+
+CREATE OR REPLACE PROCEDURE TPCH_ANALYTICS_DB.ANALYTICS.SP_LOAD_ORDERS_INCREMENTAL()
+RETURNS VARCHAR
+EXECUTE AS CALLER
+AS
+$$
+BEGIN 
+    IF(SYSTEM$STREAM_HAS_DATA('TPCH_ANALYTICS.STAGING.ORDERS_STREAM')) THEN
+        MERGE INTO TPCH_ANALYTICS_DB.ANALYTICS.ORDERS_SILVER AS tgt
+        USING (
+            SELECT  
+                O_ORDERKEY,
+                O_CUSTKEY,
+                O_ORDERSTATUS,
+                CASE O_ORDERSTATUS
+                    WHEN 'O' THEN 'OKE'
+                    WHEN 'F' THEN 'FAILED'
+                    WHEN 'P' THEN 'PENDING' 
+                    ELSE 'UNKNOWN'
+                END AS O_ORDERSTATUS_DESC,
+                O_TOTALPRICE,
+                O_ORDERDATE,
+                YEAR(O_ORDERDATE)           AS O_ORDER_YEAR,
+                MONTH(O_ORDERDATE)          AS O_ORDER_MONTH,
+                QUARTER(O_ORDERDATE)        AS O_ORDER_QUARTER,
+                CASE O_ORDERPRIORITY
+                    WHEN '1-URGENT' THEN 'URGENT'
+                    WHEN '2-HIGH'   THEN 'HIGH'
+                    WHEN '3-MEDIUM' THEN 'MEDIUM'
+                    WHEN '4-NOT SPECIFIED' THEN 'NOT SPECIFIED'
+                    WHEN '5-LOW' THEN 'LOW'
+                    ELSE 'UNKNOWN'
+                END AS O_ORDERPRIORITY,
+                CASE O_ORDERPRIORITY
+                    WHEN '1-URGENT'        THEN 1
+                    WHEN '2-HIGH'          THEN 2
+                    WHEN '3-MEDIUM'        THEN 3
+                    WHEN '4-NOT SPECIFIED' THEN 4
+                    WHEN '5-LOW'           THEN 5
+                    ELSE NULL
+                END AS O_PRIORITY_RANK,
+                O_CLERK,
+                TRY_CAST(SUBSTR(O_CLERK, 7) AS NUMBER(9,0)) AS O_CLERK_ID,
+                O_SHIPPRIORITY,
+                O_COMMENT,
+                'STAGING.ORDERS_STREAM' AS SOURCE_FILE
+            FROM TPCH_ANALYTICS_DB.STAGING.ORDERS_STREAM
+            WHERE METADATA$ACTION = 'INSERT'
+        ) AS src
+        ON tgt.O_ORDERKEY = src.O_ORDERKEY
+        WHEN MATCHED THEN
+            UPDATE SET
+                tgt.O_CUSTKEY          = src.O_CUSTKEY,
+                tgt.O_ORDERSTATUS      = src.O_ORDERSTATUS,
+                tgt.O_ORDERSTATUS_DESC = src.O_ORDERSTATUS_DESC,
+                tgt.O_TOTALPRICE       = src.O_TOTALPRICE,
+                tgt.O_ORDERDATE        = src.O_ORDERDATE,
+                tgt.O_ORDER_YEAR       = src.O_ORDER_YEAR,
+                tgt.O_ORDER_MONTH      = src.O_ORDER_MONTH,
+                tgt.O_ORDER_QUARTER    = src.O_ORDER_QUARTER,
+                tgt.O_ORDERPRIORITY    = src.O_ORDERPRIORITY,
+                tgt.O_PRIORITY_RANK    = src.O_PRIORITY_RANK,
+                tgt.O_CLERK            = src.O_CLERK,
+                tgt.O_CLERK_ID         = src.O_CLERK_ID,
+                tgt.O_SHIPPRIORITY     = src.O_SHIPPRIORITY,
+                tgt.O_COMMENT          = src.O_COMMENT,
+                tgt.LAST_UPDATED_AT    = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
+        WHEN NOT MATCHED THEN
+            INSERT (
+                O_ORDERKEY, O_CUSTKEY, O_ORDERSTATUS, O_ORDERSTATUS_DESC,
+                O_TOTALPRICE, O_ORDERDATE, O_ORDER_YEAR, O_ORDER_MONTH, O_ORDER_QUARTER,
+                O_ORDERPRIORITY, O_PRIORITY_RANK, O_CLERK, O_CLERK_ID, O_SHIPPRIORITY,
+                O_COMMENT, SOURCE_FILE, FIRST_LOADED_AT, LAST_UPDATED_AT
+            )
+            VALUES (
+                src.O_ORDERKEY, src.O_CUSTKEY, src.O_ORDERSTATUS, src.O_ORDERSTATUS_DESC,
+                src.O_TOTALPRICE, src.O_ORDERDATE, src.O_ORDER_YEAR, src.O_ORDER_MONTH, src.O_ORDER_QUARTER,
+                src.O_ORDERPRIORITY, src.O_PRIORITY_RANK, src.O_CLERK, src.O_CLERK_ID, src.O_SHIPPRIORITY,
+                src.O_COMMENT, src.SOURCE_FILE, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
+            );
+        RETURN 'SUCCESS: Consumed ORDERS_STREAM and updated ORDERS_SILVER.';
+    ELSE
+        RETURN 'NO_DATA: ORDERS_STREAM is empty.';
+    END IF;
+END;
+$$;
+
+
+
+
+CREATE OR REPLACE PROCEDURE TPCH_ANALYTICS_DB.ANALYTICS.SP_LOAD_CUSTOMERS_INCREMENTAL()
+RETURNS VARCHAR
+EXECUTE AS CALLER
+AS
+$$
+BEGIN
+    IF (SYSTEM$STREAM_HAS_DATA('TPCH_ANALYTICS_DB.STAGING.CUSTOMER_STREAM')) THEN
+        MERGE INTO TPCH_ANALYTICS_DB.ANALYTICS.CUSTOMER_SILVER AS tgt
+        USING (
+            SELECT 
+                c.C_CUSTKEY,
+                c.C_NAME,
+                c.C_ADDRESS,
+                c.C_NATIONKEY,
+                n.N_NAME      AS C_NATION_NAME,
+                r.R_REGIONKEY AS C_REGIONKEY,
+                r.R_NAME      AS C_REGION_NAME,
+                c.C_PHONE,
+                c.C_ACCTBAL,
+                c.C_MKTSEGMENT,
+                c.C_COMMENT
+            FROM TPCH_ANALYTICS_DB.STAGING.CUSTOMER_STREAM c
+            LEFT JOIN TPCH_ANALYTICS_DB.STAGING.NATION n ON c.C_NATIONKEY = n.N_NATIONKEY
+            LEFT JOIN TPCH_ANALYTICS_DB.STAGING.REGION r ON n.N_REGIONKEY = r.R_REGIONKEY
+            WHERE c.METADATA$ACTION = 'INSERT'
+        ) AS src
+        ON tgt.C_CUSTKEY = src.C_CUSTKEY
+        WHEN MATCHED THEN
+            UPDATE SET
+                tgt.C_NAME          = src.C_NAME,
+                tgt.C_ADDRESS       = src.C_ADDRESS,
+                tgt.C_NATIONKEY     = src.C_NATIONKEY,
+                tgt.C_NATION_NAME   = src.C_NATION_NAME,
+                tgt.C_REGIONKEY     = src.C_REGIONKEY,
+                tgt.C_REGION_NAME   = src.C_REGION_NAME,
+                tgt.C_PHONE         = src.C_PHONE,
+                tgt.C_ACCTBAL       = src.C_ACCTBAL,
+                tgt.C_MKTSEGMENT    = src.C_MKTSEGMENT,
+                tgt.C_COMMENT       = src.C_COMMENT,
+                tgt.LOAD_TIMESTAMP  = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
+        WHEN NOT MATCHED THEN
+            INSERT (
+                C_CUSTKEY, C_NAME, C_ADDRESS, C_NATIONKEY, C_NATION_NAME,
+                C_REGIONKEY, C_REGION_NAME, C_PHONE, C_ACCTBAL, C_MKTSEGMENT,
+                C_COMMENT, LOAD_TIMESTAMP
+            )
+            VALUES (
+                src.C_CUSTKEY, src.C_NAME, src.C_ADDRESS, src.C_NATIONKEY, src.C_NATION_NAME,
+                src.C_REGIONKEY, src.C_REGION_NAME, src.C_PHONE, src.C_ACCTBAL, src.C_MKTSEGMENT,
+                src.C_COMMENT, CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
+            );
+        RETURN 'SUCCESS: Consumed CUSTOMER_STREAM and updated CUSTOMER_SILVER.';
+    ELSE
+        RETURN 'NO_DATA: CUSTOMER_STREAM is empty.';
+    END IF;
+END;
+$$;
+
+
+--BƯỚC 3: TẠO TASK VÀ LẬP LỊCH CỨ SAU 1 KHOẢNG THỜI GIAN THÌ CHẠY NẾU CÓ DỮ LIỆU MỚI ĐƯỢC INSERT VÀO 
+-- TASK 1: Root Task (Quét Orders Stream mỗi 5 phút nếu có dữ liệu)
+CREATE OR REPLACE TASK TPCH_ANALYTICS_DB.REPORTS.TASK_ORDERS_BRONZE_TO_SILVER
+    WAREHOUSE = COMPUTE_WH
+    SCHEDULE = '5 MINUTE'
+    WHEN SYSTEM$STREAM_HAS_DATA('TPCH_ANALYTICS_DB.STAGING.ORDERS_STREAM')
+AS
+    CALL TPCH_ANALYTICS_DB.ANALYTICS.SP_LOAD_ORDERS_INCREMENTAL();
+
+-- TASK 2: Chạy nối tiếp sau Task 1 để xử lý Customers Stream
+CREATE OR REPLACE TASK TPCH_ANALYTICS_DB.REPORTS.TASK_CUSTOMERS_BRONZE_TO_SILVER
+    WAREHOUSE = COMPUTE_WH
+    AFTER TPCH_ANALYTICS_DB.REPORTS.TASK_ORDERS_BRONZE_TO_SILVER
+    WHEN SYSTEM$STREAM_HAS_DATA('TPCH_ANALYTICS_DB.STAGING.CUSTOMER_STREAM')
+AS
+    CALL TPCH_ANALYTICS_DB.ANALYTICS.SP_LOAD_CUSTOMERS_INCREMENTAL();
+
+-- TASK 3: Tầng Gold (Customer LTV) - Kích hoạt sau khi Task 2 xong
+CREATE OR REPLACE TASK TPCH_ANALYTICS_DB.REPORTS.TASK_GOLD_CUSTOMER_LTV
+    WAREHOUSE = COMPUTE_WH
+    AFTER TPCH_ANALYTICS_DB.REPORTS.TASK_CUSTOMERS_BRONZE_TO_SILVER
+AS
+    CALL TPCH_ANALYTICS_DB.REPORTS.SP_CALCULATE_CUSTOMER_LTV();
+
+-- TASK 4: Tầng Gold (Daily Sales) - Chạy song song sau khi Task 1 hoàn tất nạp đơn hàng
+CREATE OR REPLACE TASK TPCH_ANALYTICS_DB.REPORTS.TASK_GOLD_DAILY_SALES
+    WAREHOUSE = COMPUTE_WH
+    AFTER TPCH_ANALYTICS_DB.REPORTS.TASK_ORDERS_BRONZE_TO_SILVER
+AS
+    CALL TPCH_ANALYTICS_DB.REPORTS.SP_CALCULATE_DAILY_SALES_SUMMARY();
+
+
+
+--BƯỚC 4: KÍCH HOẠT TASK < TỪ KHÓA MỚI RESUME>
+-- 1. Bật các task con tầng Gold
+ALTER TASK TPCH_ANALYTICS_DB.REPORTS.TASK_GOLD_CUSTOMER_LTV RESUME;
+ALTER TASK TPCH_ANALYTICS_DB.REPORTS.TASK_GOLD_DAILY_SALES RESUME;
+
+-- 2. Bật task trung gian
+ALTER TASK TPCH_ANALYTICS_DB.REPORTS.TASK_CUSTOMERS_BRONZE_TO_SILVER RESUME;
+
+-- 3. Bật task gốc
+ALTER TASK TPCH_ANALYTICS_DB.REPORTS.TASK_ORDERS_BRONZE_TO_SILVER RESUME;
+
+
+
+-- 1. Kiểm tra trạng thái của các Task (Cột STATE phải là 'started')
+SHOW TASKS IN SCHEMA TPCH_ANALYTICS_DB.REPORTS;
+
+-- 2. Đảm bảo Stream ban đầu đang sạch (0 rows)
+SELECT COUNT(*) AS STREAM_COUNT FROM TPCH_ANALYTICS_DB.STAGING.ORDERS_STREAM;
+
+
+
+-- Lấy thông tin khách hàng 30001 trước khi nạp để đối chiếu
+SELECT C_CUSTKEY, TOTAL_ORDERS, TOTAL_SPENT, CUSTOMER_TIER 
+FROM TPCH_ANALYTICS_DB.REPORTS.CUSTOMER_LTV 
+WHERE C_CUSTKEY = 30001;
+
+
+--TEST 1
+-- Chèn bản ghi đơn hàng gia tăng vào Bronze
+INSERT INTO TPCH_ANALYTICS_DB.STAGING.ORDERS (
+    O_ORDERKEY,
+    O_CUSTKEY,
+    O_ORDERSTATUS,
+    O_TOTALPRICE,
+    O_ORDERDATE,
+    O_ORDERPRIORITY,
+    O_CLERK,
+    O_SHIPPRIORITY,
+    O_COMMENT
+)
+VALUES (
+    88888888,
+    30001,
+    'O',
+    250000.00,
+    CURRENT_DATE(),
+    '1-URGENT',
+    'Clerk#000009999',
+    0,
+    'Test simulated pipeline 2.6'
+);
+
+
+
+-- Kiểm tra cờ dữ liệu của Stream (kết quả trả về TRUE)
+SELECT SYSTEM$STREAM_HAS_DATA('TPCH_ANALYTICS_DB.STAGING.ORDERS_STREAM') AS HAS_DATA;
+
+-- Đọc nội dung Stream
+SELECT 
+    O_ORDERKEY,
+    O_CUSTKEY,
+    O_TOTALPRICE,
+    METADATA$ACTION,
+    METADATA$ISUPDATE,
+    METADATA$ROW_ID
+FROM TPCH_ANALYTICS_DB.STAGING.ORDERS_STREAM;
+
+
+
+-- Kích hoạt Task gốc chạy thủ công ngay lập tức (không cần chờ 5 phút)
+EXECUTE TASK TPCH_ANALYTICS_DB.REPORTS.TASK_ORDERS_BRONZE_TO_SILVER;
+
+-- Đợi 10-15 giây để toàn bộ chuỗi DAG hoàn tất, sau đó kiểm tra 3 điểm:
+
+-- 1. Kiểm tra Silver: Bản ghi đã vào ORDERS_SILVER kèm logic enrich
+SELECT 
+    O_ORDERKEY, 
+    O_CUSTKEY, 
+    O_ORDERSTATUS_DESC, 
+    O_PRIORITY_RANK, 
+    O_CLERK_ID, 
+    LAST_UPDATED_AT
+FROM TPCH_ANALYTICS_DB.ANALYTICS.ORDERS_SILVER 
+WHERE O_ORDERKEY = 88888888;
+
+-- 2. Kiểm tra Stream Consume: Stream phải tự xóa bản ghi (kết quả = 0 rows)
+SELECT COUNT(*) AS REMAINING_STREAM_ROWS 
+FROM TPCH_ANALYTICS_DB.STAGING.ORDERS_STREAM;
+
+-- 3. Kiểm tra Gold: Chỉ số của khách hàng 30001 đã tự cập nhật
+SELECT 
+    C_CUSTKEY, 
+    TOTAL_ORDERS, 
+    TOTAL_SPENT, 
+    CUSTOMER_TIER, 
+    LAST_CALCULATED_AT
+FROM TPCH_ANALYTICS_DB.REPORTS.CUSTOMER_LTV 
+WHERE C_CUSTKEY = 30001;
+
+
+
+
+SELECT 
+    NAME AS TASK_NAME,
+    STATE AS STATUS,
+    SCHEDULED_TIME,
+    QUERY_START_TIME,
+    COMPLETED_TIME,
+    DATEDIFF('second', QUERY_START_TIME, COMPLETED_TIME) AS DURATION_SECONDS,
+    ERROR_CODE,
+    ERROR_MESSAGE
+FROM TABLE(INFORMATION_SCHEMA.TASK_HISTORY(
+    SCHEDULED_TIME_RANGE_START => DATEADD('minute', -30, CURRENT_TIMESTAMP())
+))
+WHERE NAME IN (
+    'TASK_ORDERS_BRONZE_TO_SILVER',
+    'TASK_CUSTOMERS_BRONZE_TO_SILVER',
+    'TASK_GOLD_CUSTOMER_LTV',
+    'TASK_GOLD_DAILY_SALES'
+)
+ORDER BY QUERY_START_TIME DESC;
+
+
+
+-- Xóa bản ghi test ở các tầng
+DELETE FROM TPCH_ANALYTICS_DB.STAGING.ORDERS WHERE O_ORDERKEY = 88888888;
+DELETE FROM TPCH_ANALYTICS_DB.ANALYTICS.ORDERS_SILVER WHERE O_ORDERKEY = 88888888;
+
+-- Tính toán lại bảng Gold về trạng thái chuẩn
+CALL TPCH_ANALYTICS_DB.REPORTS.SP_CALCULATE_CUSTOMER_LTV();
+CALL TPCH_ANALYTICS_DB.REPORTS.SP_CALCULATE_DAILY_SALES_SUMMARY();
+
+
+
+
+
+
